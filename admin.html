@@ -54,10 +54,10 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 
-/* Login anónimo: necesario para escribir en Firestore */
+/* Login anónimo */
 firebase.auth().signInAnonymously().catch(console.error);
 
-/*** 🔎 Bloque de estado de autenticación / dominios ***/
+/*** Estado de autenticación ***/
 const statusDiv = document.createElement('div');
 statusDiv.id = 'status';
 statusDiv.style.cssText =
@@ -70,7 +70,7 @@ firebase.auth().onAuthStateChanged(u => {
   else   statusDiv.textContent = 'No autenticado.';
 });
 
-// Reintento + alert si falla (p.ej. dominio no autorizado)
+// Reintento + aviso si falla
 firebase.auth().signInAnonymously()
   .then(() => console.log('Anon sign-in OK'))
   .catch(e => {
@@ -78,85 +78,18 @@ firebase.auth().signInAnonymously()
     alert('❌ Error de autenticación anónima: ' + (e?.message || e));
   });
 
-console.log('Firebase initialized with:', firebase.app().options);
-
 /*** Analizador ***/
 const EXPECTED_COLS = 10;
 window.__results = [];
 const normalize = s => (s??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
-/* ---------- Parser robusto ---------- */
-function splitHard(line){
-  // Preferente: Tab, ; , ,  o dos+ espacios
+// Parser robusto (prioriza tab de Google Sheets; también ; , o 1+ espacios)
+function splitSmart(line){
   if (line.includes('\t')) return line.split('\t').map(s=>s.trim());
   if (line.includes(';'))  return line.split(';').map(s=>s.trim());
   if (line.includes(','))  return line.split(',').map(s=>s.trim());
-  return line.trim().split(/\s{2,}/).map(s=>s.trim());
+  return line.trim().split(/\s+/).map(s=>s.trim()); // 1 o más espacios
 }
-
-function heuristicParse(line){
-  // Fallback cuando splitHard no logra >=9 columnas
-  const t = line.trim().split(/\s+/);
-  if (t.length < 7) return []; // imposible
-  let i = 0;
-  const id = t[i++] ?? '';
-  const ruta = t[i++] ?? '';
-  const parada = t[i++] ?? '';
-  const punto  = t[i++] ?? '';
-
-  // Fecha inbound: dd/mm/yyyy [hh:mm]
-  let inbound = '';
-  const dateRegex = /^\d{1,2}\/\d{1,2}\/\d{4}$/;
-  const timeRegex = /^\d{1,2}:\d{2}$/;
-  if (t[i] && dateRegex.test(t[i])) {
-    inbound = t[i++];
-    if (t[i] && timeRegex.test(t[i])) inbound += ' ' + t[i++];
-  }
-
-  const alto  = t[i++] ?? '';
-  const ancho = t[i++] ?? '';
-  const largo = t[i++] ?? '';
-
-  let rest = t.slice(i).join(' ').trim(); // ubicación + posible detalle
-  const restNorm = normalize(rest);
-
-  let ubic = '', detalle = '';
-  if (restNorm.includes('en la estacion')) {
-    // tomar exactamente "En la estación" como ubicación y el resto como detalle
-    const idx = restNorm.indexOf('en la estacion');
-    // Calcular posiciones reales respetando mayúsculas/acentos del original
-    const before = rest.slice(0, idx).trim();
-    const after  = rest.slice(idx).trim();
-
-    // 'after' empieza en "En la estación..."
-    // separar ubic ("En la estación") del resto del after
-    const m = after.match(/^(En\s+la\s+estaci[oó]n)(.*)$/i);
-    if (m) {
-      ubic = m[1].trim();
-      detalle = (before + ' ' + (m[2]||'')).trim();
-    } else {
-      // fallback conservador
-      ubic = 'En la estación';
-      detalle = (before + ' ' + after.replace(/En\s+la\s+estaci[oó]n/i,'').trim()).trim();
-    }
-  } else {
-    // No encontramos exactamente "En la estación"
-    ubic = rest; detalle = '';
-  }
-
-  // Devuelve arreglo estilo columnas
-  return [id, ruta, parada, punto, inbound, alto, ancho, largo, ubic, detalle];
-}
-
-function splitSmart10(line){
-  // 1) Intento duro
-  let cols = splitHard(line);
-  if (cols.length >= 9) return cols;
-  // 2) Heurístico
-  cols = heuristicParse(line);
-  return cols;
-}
-/* ---------- Fin parser ---------- */
 
 function processData(){
   const raw=document.getElementById('sheetData').value.trim();
@@ -168,10 +101,14 @@ function processData(){
 
   lines.forEach(line=>{
     total++;
-    let cols = splitSmart10(line);
-    if (cols.length > EXPECTED_COLS)
+    let cols=splitSmart(line);
+
+    // Si hay más de 10 columnas, junta las extras en "Detalle"
+    if (cols.length>EXPECTED_COLS) {
       cols = cols.slice(0,9).concat([cols.slice(9).join(' ')]);
-    if (cols.length < 9){ skipped++; return; }
+    }
+
+    if (cols.length<9){ skipped++; return; }
 
     const id=cols[0]||'N/A';
     const ruta=cols[1]||'N/A';
@@ -180,7 +117,7 @@ function processData(){
     const detalle=(cols[9]&&cols[9].length)?cols[9]:'conveyable';
 
     // ✅ Solo EXACTAMENTE "En la estación"
-    if (normalize(loc) === 'en la estacion'){
+    if (normalize(loc)==='en la estacion'){
       found++;
       window.__results.push({id, ruta, inbound: inbound||'N/A', detalle});
       const div=document.createElement('div'); div.className='package';
@@ -192,6 +129,7 @@ function processData(){
     }
   });
 
+  // Siempre actualiza el resumen
   sum.innerHTML = `<strong>Resumen:</strong> Filas: ${total} · En la estación: ${found} · Saltadas: ${skipped}`;
 }
 
@@ -205,7 +143,7 @@ function copyViewerURL(){
   navigator.clipboard?.writeText(url).then(()=>alert('URL copiada:\n'+url)).catch(()=>prompt('Copia la URL:',url));
 }
 
-/*** Publicación con manejo de errores ***/
+/*** Publicación ***/
 async function publish(){
   if(!window.__results || window.__results.length === 0){
     alert('Procesa datos primero.');
