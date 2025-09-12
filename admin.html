@@ -7,13 +7,15 @@
 <style>
   body{font-family:Arial, sans-serif;margin:20px;background:#f4f4f9}
   .container{max-width:980px;margin:auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}
-  textarea{width:100%;height:220px;margin:12px 0;padding:10px;border:1px solid #ccc;border-radius:6px}
+  textarea{width:100%;height:240px;margin:12px 0;padding:10px;border:1px solid #ccc;border-radius:6px;font-family:monospace;white-space:pre;}
   .row{display:flex;gap:12px;flex-wrap:wrap}
   button{padding:10px 14px;background:#007BFF;color:#fff;border:0;border-radius:6px;cursor:pointer}
   button:hover{background:#0056b3}
   .package{background:#e9ecef;border:1px solid #ced4da;padding:10px;margin:8px 0;border-radius:6px}
   .summary{background:#f8f9fa;border:1px dashed #ced4da;padding:10px;border-radius:6px;margin:12px 0}
   small.muted{color:#666}
+  .diag{margin:8px 0;color:#444;font-size:12px}
+  .ok{color:#0a7a0a}.warn{color:#b36b00}.err{color:#b00020}
 </style>
 </head>
 <body>
@@ -26,6 +28,9 @@
   <br><small class="muted">Ejemplo: <code>mel-scl-01</code></small>
 
   <textarea id="sheetData" placeholder="Pega tus filas aquí…"></textarea>
+
+  <div id="diag" class="diag">Diagnóstico: <span id="diagText">—</span></div>
+
   <div class="row">
     <button onclick="processData()">Procesar</button>
     <button onclick="publish()">Publicar</button>
@@ -41,7 +46,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 
 <script>
-/*** 🔧 Configuración Firebase real ***/
+/*** Config Firebase (tu proyecto) ***/
 const firebaseConfig = {
   apiKey: "AIzaSyCdiJAKX8RYT9DNanmp25e4FbmZJupHJJ8",
   authDomain: "paquetes-stc1.firebaseapp.com",
@@ -54,105 +59,123 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 
-/* Login anónimo */
+/*** Login anónimo + estado ***/
 firebase.auth().signInAnonymously().catch(console.error);
 
-/*** Estado de autenticación ***/
 const statusDiv = document.createElement('div');
-statusDiv.id = 'status';
-statusDiv.style.cssText =
-  'margin:10px 0;padding:8px;border:1px dashed #ccc;border-radius:6px;color:#333;background:#f8f9fa';
+statusDiv.style.cssText='margin:10px 0;padding:8px;border:1px dashed #ccc;border-radius:6px;background:#f8f9fa';
 statusDiv.textContent = 'Comprobando autenticación…';
-document.querySelector('.container').insertBefore(statusDiv, document.querySelector('#sheetData').parentElement);
+document.querySelector('.container').insertBefore(statusDiv, document.querySelector('#sheetData'));
 
-firebase.auth().onAuthStateChanged(u => {
-  if (u) statusDiv.textContent = `Autenticado (anónimo). UID: ${u.uid}`;
-  else   statusDiv.textContent = 'No autenticado.';
+firebase.auth().onAuthStateChanged(u=>{
+  statusDiv.textContent = u ? `Autenticado (anónimo). UID: ${u.uid}` : 'No autenticado.';
 });
-
-// Reintento + aviso si falla
-firebase.auth().signInAnonymously()
-  .then(() => console.log('Anon sign-in OK'))
-  .catch(e => {
-    console.error('Anon sign-in error:', e);
-    alert('❌ Error de autenticación anónima: ' + (e?.message || e));
-  });
 
 /*** Analizador ***/
 const EXPECTED_COLS = 10;
 window.__results = [];
 const normalize = s => (s??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
-// Parser robusto (prioriza tab de Google Sheets; también ; , o 1+ espacios)
+// 1) PRIORIDAD absoluta: TAB (Google Sheets pega TSV)
+function splitTSV(line){
+  return line.split('\t').map(s=>s.trim());
+}
+// 2) fallbacks seguros que no rompen "En la estación Voluminoso"
 function splitSmart(line){
-  if (line.includes('\t')) return line.split('\t').map(s=>s.trim());
+  if (line.includes('\t')) return splitTSV(line);
   if (line.includes(';'))  return line.split(';').map(s=>s.trim());
   if (line.includes(','))  return line.split(',').map(s=>s.trim());
-  return line.trim().split(/\s+/).map(s=>s.trim()); // 1 o más espacios
+  // último recurso: dos+ espacios (no 1 solo, para no cortar el detalle)
+  return line.trim().split(/\s{2,}/).map(s=>s.trim());
 }
 
 function processData(){
-  const raw=document.getElementById('sheetData').value.trim();
-  const lines=raw.split(/\r?\n/).filter(l=>l.trim());
-  const list=document.getElementById('list');
-  const sum=document.getElementById('summary');
-  list.innerHTML=''; window.__results=[];
-  let total=0,found=0,skipped=0;
+  const raw = document.getElementById('sheetData').value.replace(/\r/g,'').trim();
+  const lines = raw.split('\n').filter(l=>l.trim());
+  const list  = document.getElementById('list');
+  const sum   = document.getElementById('summary');
+  const diagT = document.getElementById('diagText');
 
-  lines.forEach(line=>{
-    total++;
-    let cols=splitSmart(line);
+  list.innerHTML = '';
+  window.__results = [];
+  let total=0, found=0, skipped=0;
 
-    // Si hay más de 10 columnas, junta las extras en "Detalle"
-    if (cols.length>EXPECTED_COLS) {
-      cols = cols.slice(0,9).concat([cols.slice(9).join(' ')]);
+  if (lines.length===0){
+    diagT.innerHTML = '<span class="warn">No hay líneas pegadas.</span>';
+    sum.textContent = 'Sin procesar.';
+    return;
+  }
+
+  try{
+    lines.forEach((line, idx)=>{
+      total++;
+      let cols = splitSmart(line);
+
+      // diagnostico primera fila
+      if (idx===0){
+        diagT.innerHTML = `Primera fila: <b>${cols.length}</b> columnas detectadas `
+          + (line.includes('\t') ? '<span class="ok">(separador: TAB)</span>'
+                                 : '<span class="warn">(sin TAB; usando separador alterno)</span>');
+      }
+
+      // compactar extras en detalle
+      if (cols.length > EXPECTED_COLS) cols = cols.slice(0,9).concat([cols.slice(9).join(' ')]);
+      if (cols.length < 9){ skipped++; return; }
+
+      const id      = cols[0] || 'N/A';
+      const ruta    = cols[1] || 'N/A';
+      const inbound = (cols[4]||'').trim();
+      const loc     = cols[8] || '';
+      const detalle = (cols[9] && cols[9].length) ? cols[9] : 'conveyable';
+
+      // SOLO "En la estación"
+      if (normalize(loc) === 'en la estacion'){
+        found++;
+        window.__results.push({id, ruta, inbound: inbound || 'N/A', detalle});
+
+        const div = document.createElement('div');
+        div.className = 'package';
+        div.innerHTML = `<p><strong>ID:</strong> ${id}</p>
+                         <p><strong>Ruta:</strong> ${ruta}</p>
+                         <p><strong>Fecha inbound:</strong> ${inbound || 'N/A'}</p>
+                         <p><strong>Detalle:</strong> ${detalle}</p>`;
+        list.appendChild(div);
+      }
+    });
+
+    sum.innerHTML = `<strong>Resumen:</strong> Filas: ${total} · En la estación: ${found} · Saltadas: ${skipped}`;
+    if (found===0) {
+      diagT.innerHTML += ' — <span class="warn">No se encontraron filas con ubicación exactamente “En la estación”.</span>';
     }
-
-    if (cols.length<9){ skipped++; return; }
-
-    const id=cols[0]||'N/A';
-    const ruta=cols[1]||'N/A';
-    const inbound=(cols[4]||'').trim();
-    const loc=cols[8]||'';
-    const detalle=(cols[9]&&cols[9].length)?cols[9]:'conveyable';
-
-    // ✅ Solo EXACTAMENTE "En la estación"
-    if (normalize(loc)==='en la estacion'){
-      found++;
-      window.__results.push({id, ruta, inbound: inbound||'N/A', detalle});
-      const div=document.createElement('div'); div.className='package';
-      div.innerHTML=`<p><strong>ID:</strong> ${id}</p>
-                     <p><strong>Ruta:</strong> ${ruta}</p>
-                     <p><strong>Fecha inbound:</strong> ${inbound||'N/A'}</p>
-                     <p><strong>Detalle:</strong> ${detalle}</p>`;
-      list.appendChild(div);
-    }
-  });
-
-  // Siempre actualiza el resumen
-  sum.innerHTML = `<strong>Resumen:</strong> Filas: ${total} · En la estación: ${found} · Saltadas: ${skipped}`;
+  } catch(e){
+    console.error(e);
+    sum.innerHTML = 'Ocurrió un error procesando.';
+    document.getElementById('diagText').innerHTML =
+      `<span class="err">Error: ${e?.message||e}</span>`;
+  }
 }
 
 function viewerURL(){
-  const id=document.getElementById('pubId').value.trim()||'station-results';
-  const base=location.origin+location.pathname.replace(/admin\.html$/,'')+'viewer.html';
+  const id = document.getElementById('pubId').value.trim() || 'station-results';
+  const base = location.origin + location.pathname.replace(/admin\.html$/,'') + 'viewer.html';
   return `${base}?id=${encodeURIComponent(id)}`;
 }
 function copyViewerURL(){
-  const url=viewerURL();
-  navigator.clipboard?.writeText(url).then(()=>alert('URL copiada:\n'+url)).catch(()=>prompt('Copia la URL:',url));
+  const url = viewerURL();
+  navigator.clipboard?.writeText(url)
+    .then(()=>alert('URL copiada:\n'+url))
+    .catch(()=>prompt('Copia la URL:', url));
 }
 
 /*** Publicación ***/
 async function publish(){
-  if(!window.__results || window.__results.length === 0){
+  if (!window.__results || window.__results.length===0){
     alert('Procesa datos primero.');
     return;
   }
   const user = firebase.auth().currentUser;
-  if (!user) {
-    alert('❌ No estás autenticado (anónimo). Habilita Anonymous y autoriza el dominio en Firebase.');
-    console.warn('currentUser es null');
+  if (!user){
+    alert('❌ No estás autenticado (anónimo). Revisa Firebase: Auth Anónimo + dominios autorizados.');
     return;
   }
 
@@ -162,13 +185,12 @@ async function publish(){
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
   };
 
-  try {
-    console.log('Publicando en Firestore → results/', id, payload);
+  try{
     await db.collection('results').doc(id).set(payload);
-    const url = location.origin + location.pathname.replace(/admin\.html$/,'') + 'viewer.html?id=' + encodeURIComponent(id);
+    const url = viewerURL();
     alert('Publicado ✅\nViewer: ' + url);
-  } catch (e) {
-    console.error('Error al publicar:', e);
+  }catch(e){
+    console.error(e);
     alert('❌ Error al publicar: ' + (e?.message || e));
   }
 }
