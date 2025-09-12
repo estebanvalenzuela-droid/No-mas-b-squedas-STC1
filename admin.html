@@ -60,7 +60,8 @@ firebase.auth().signInAnonymously().catch(console.error);
 /*** 🔎 Bloque de estado de autenticación / dominios ***/
 const statusDiv = document.createElement('div');
 statusDiv.id = 'status';
-statusDiv.style.cssText = 'margin:10px 0;padding:8px;border:1px dashed #ccc;border-radius:6px;color:#333;background:#f8f9fa';
+statusDiv.style.cssText =
+  'margin:10px 0;padding:8px;border:1px dashed #ccc;border-radius:6px;color:#333;background:#f8f9fa';
 statusDiv.textContent = 'Comprobando autenticación…';
 document.querySelector('.container').insertBefore(statusDiv, document.querySelector('#sheetData').parentElement);
 
@@ -84,20 +85,12 @@ const EXPECTED_COLS = 10;
 window.__results = [];
 const normalize = s => (s??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
-function splitDSV(line, sep){
-  let o=[],c='',q=false;
-  for(let i=0;i<line.length;i++){
-    const ch=line[i];
-    if(ch==='"'){ if(q&&line[i+1]==='"'){c+='"';i++;} else {q=!q;} continue; }
-    if(!q&&ch===sep){ o.push(c.trim()); c=''; } else { c+=ch; }
-  }
-  o.push(c.trim()); return o;
-}
+// Split robusto: tabs, ; , o cualquier cantidad de espacios
 function splitSmart(line){
-  if(line.includes('\t'))return splitDSV(line,'\t');
-  if(line.includes(';')) return splitDSV(line,';');
-  if(line.includes(',')) return splitDSV(line,',');
-  return line.split(/ {2,}/).map(s=>s.trim());
+  if (line.includes('\t')) return line.split('\t').map(s=>s.trim());
+  if (line.includes(';'))  return line.split(';').map(s=>s.trim());
+  if (line.includes(','))  return line.split(',').map(s=>s.trim());
+  return line.trim().split(/\s+/); // 1+ espacios
 }
 
 function processData(){
@@ -109,13 +102,21 @@ function processData(){
   let total=0,found=0,skipped=0;
 
   lines.forEach(line=>{
-    total++; let cols=splitSmart(line).map(c=>c??'');
-    if(cols.length>EXPECTED_COLS) cols=cols.slice(0,9).concat([cols.slice(9).join(' ')]);
-    if(cols.length<9){skipped++;return;}
-    const id=cols[0]||'N/A', ruta=cols[1]||'N/A', inbound=(cols[4]||'').trim(),
-          loc=cols[8]||'', detalle=(cols[9]&&cols[9].length)?cols[9]:'conveyable';
-    if(normalize(loc)==='en la estacion'){
-      found++; window.__results.push({id, ruta, inbound: inbound||'N/A', detalle});
+    total++;
+    let cols=splitSmart(line);
+    // Si hay más de 10, compacta desde la 10 en adelante en "Detalle"
+    if (cols.length>EXPECTED_COLS) cols = cols.slice(0,9).concat([cols.slice(9).join(' ')]);
+    if (cols.length<9){ skipped++; return; }
+
+    const id=cols[0]||'N/A';
+    const ruta=cols[1]||'N/A';
+    const inbound=(cols[4]||'').trim();
+    const loc=cols[8]||'';
+    const detalle=(cols[9]&&cols[9].length)?cols[9]:'conveyable';
+
+    if (normalize(loc)==='en la estacion'){
+      found++;
+      window.__results.push({id, ruta, inbound: inbound||'N/A', detalle});
       const div=document.createElement('div'); div.className='package';
       div.innerHTML=`<p><strong>ID:</strong> ${id}</p>
                      <p><strong>Ruta:</strong> ${ruta}</p>
@@ -124,6 +125,7 @@ function processData(){
       list.appendChild(div);
     }
   });
+
   sum.innerHTML = `<strong>Resumen:</strong> Filas: ${total} · En la estación: ${found} · Saltadas: ${skipped}`;
 }
 
