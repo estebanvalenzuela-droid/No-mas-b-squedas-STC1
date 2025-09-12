@@ -1,9 +1,72 @@
-firebaseConfig = {
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Resultados – Paquetes en la estación</title>
+<style>
+ body{font-family:Arial, sans-serif;margin:20px;background:#f4f4f9}
+ .container{max-width:900px;margin:auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}
+ .package{background:#e9ecef;border:1px solid #ced4da;padding:10px;margin:8px 0;border-radius:6px}
+ .muted{color:#666}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Paquetes en la estación</h1>
+  <div id="meta" class="muted">Cargando…</div>
+  <div id="list"></div>
+</div>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<script>
+/*** 🔧 Configuración Firebase real de tu proyecto ***/
+const firebaseConfig = {
   apiKey: "AIzaSyCdiJAKX8RYT9DNanmp25e4FbmZJupHJJ8",
   authDomain: "paquetes-stc1.firebaseapp.com",
   projectId: "paquetes-stc1",
-  storageBucket: "paquetes-stc1.firebasestorage.app",
+  storageBucket: "paquetes-stc1.appspot.com",
   messagingSenderId: "561895525942",
   appId: "1:561895525942:web:883c13c63fb1447c4fd297",
   measurementId: "G-1TEMJD6VGX"
 };
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+/*** Lectura en vivo del documento ***/
+const params = new URLSearchParams(location.search);
+const id = params.get('id') || 'station-results';
+const meta = document.getElementById('meta');
+const list = document.getElementById('list');
+
+db.collection('results').doc(id).onSnapshot(snap=>{
+  if(!snap.exists){
+    meta.textContent = `Sin datos publicados (ID: ${id}).`;
+    list.innerHTML = '';
+    return;
+  }
+  const data = snap.data();
+  const items = Array.isArray(data.items) ? data.items : [];
+  list.innerHTML = '';
+  items.forEach(it=>{
+    const div = document.createElement('div');
+    div.className = 'package';
+    div.innerHTML = `
+      <p><strong>ID:</strong> ${it.id}</p>
+      <p><strong>Ruta:</strong> ${it.ruta}</p>
+      <p><strong>Fecha inbound:</strong> ${it.inbound || 'N/A'}</p>
+      <p><strong>Detalle:</strong> ${it.detalle || ''}</p>
+    `;
+    list.appendChild(div);
+  });
+  const when = data.updatedAt?.toDate ? data.updatedAt.toDate().toLocaleString() : '—';
+  meta.textContent = `Total: ${items.length} · Última actualización: ${when} · ID: ${id}`;
+}, err=>{
+  meta.textContent = 'Error al cargar: ' + err.message;
+});
+</script>
+</body>
+</html>

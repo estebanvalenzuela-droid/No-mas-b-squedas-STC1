@@ -1,9 +1,126 @@
-firebaseConfig = {
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Admin | Analizador de Paquetes</title>
+<style>
+ body{font-family:Arial, sans-serif;margin:20px;background:#f4f4f9}
+ .container{max-width:980px;margin:auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}
+ textarea{width:100%;height:220px;margin:12px 0;padding:10px;border:1px solid #ccc;border-radius:6px}
+ .row{display:flex;gap:12px;flex-wrap:wrap}
+ button{padding:10px 14px;background:#007BFF;color:#fff;border:0;border-radius:6px;cursor:pointer}
+ button:hover{background:#0056b3}
+ .package{background:#e9ecef;border:1px solid #ced4da;padding:10px;margin:8px 0;border-radius:6px}
+ .summary{background:#f8f9fa;border:1px dashed #ced4da;padding:10px;border-radius:6px;margin:12px 0}
+ small.muted{color:#666}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Admin – Analizador</h1>
+  <label>ID público (fijo) para publicar:
+    <input id="pubId" value="station-results" style="padding:6px"/>
+  </label>
+  <br><small class="muted">Ejemplo: <code>mel-scl-01</code></small>
+
+  <textarea id="sheetData" placeholder="Pega tus filas aquí…"></textarea>
+  <div class="row">
+    <button onclick="processData()">Procesar</button>
+    <button onclick="publish()">Publicar</button>
+    <button onclick="copyViewerURL()">Copiar URL del viewer</button>
+  </div>
+  <div id="summary" class="summary">Sin procesar.</div>
+  <div id="list"></div>
+</div>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+
+<script>
+/*** 🔧 Configuración Firebase real de tu proyecto ***/
+const firebaseConfig = {
   apiKey: "AIzaSyCdiJAKX8RYT9DNanmp25e4FbmZJupHJJ8",
   authDomain: "paquetes-stc1.firebaseapp.com",
   projectId: "paquetes-stc1",
-  storageBucket: "paquetes-stc1.firebasestorage.app",
+  storageBucket: "paquetes-stc1.appspot.com",
   messagingSenderId: "561895525942",
   appId: "1:561895525942:web:883c13c63fb1447c4fd297",
   measurementId: "G-1TEMJD6VGX"
 };
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+/* Login anónimo: necesario para escribir en Firestore */
+firebase.auth().signInAnonymously().catch(console.error);
+
+/*** Analizador ***/
+const EXPECTED_COLS = 10;
+window.__results = [];
+const normalize = s => (s??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+function splitDSV(line, sep){
+  let o=[],c='',q=false;
+  for(let i=0;i<line.length;i++){
+    const ch=line[i];
+    if(ch==='"'){ if(q&&line[i+1]==='"'){c+='"';i++;} else {q=!q;} continue; }
+    if(!q&&ch===sep){ o.push(c.trim()); c=''; } else { c+=ch; }
+  }
+  o.push(c.trim()); return o;
+}
+function splitSmart(line){
+  if(line.includes('\t'))return splitDSV(line,'\t');
+  if(line.includes(';')) return splitDSV(line,';');
+  if(line.includes(',')) return splitDSV(line,',');
+  return line.split(/ {2,}/).map(s=>s.trim());
+}
+
+function processData(){
+  const raw=document.getElementById('sheetData').value.trim();
+  const lines=raw.split(/\r?\n/).filter(l=>l.trim());
+  const list=document.getElementById('list');
+  const sum=document.getElementById('summary');
+  list.innerHTML=''; window.__results=[];
+  let total=0,found=0,skipped=0;
+
+  lines.forEach(line=>{
+    total++; let cols=splitSmart(line).map(c=>c??'');
+    if(cols.length>EXPECTED_COLS) cols=cols.slice(0,9).concat([cols.slice(9).join(' ')]);
+    if(cols.length<9){skipped++;return;}
+    const id=cols[0]||'N/A', ruta=cols[1]||'N/A', inbound=(cols[4]||'').trim(),
+          loc=cols[8]||'', detalle=(cols[9]&&cols[9].length)?cols[9]:'conveyable';
+    if(normalize(loc)==='en la estacion'){
+      found++; window.__results.push({id, ruta, inbound: inbound||'N/A', detalle});
+      const div=document.createElement('div'); div.className='package';
+      div.innerHTML=`<p><strong>ID:</strong> ${id}</p>
+                     <p><strong>Ruta:</strong> ${ruta}</p>
+                     <p><strong>Fecha inbound:</strong> ${inbound||'N/A'}</p>
+                     <p><strong>Detalle:</strong> ${detalle}</p>`;
+      list.appendChild(div);
+    }
+  });
+  sum.innerHTML = `<strong>Resumen:</strong> Filas: ${total} · En la estación: ${found} · Saltadas: ${skipped}`;
+}
+
+function viewerURL(){
+  const id=document.getElementById('pubId').value.trim()||'station-results';
+  const base=location.origin+location.pathname.replace(/admin\.html$/,'')+'viewer.html';
+  return `${base}?id=${encodeURIComponent(id)}`;
+}
+function copyViewerURL(){
+  const url=viewerURL();
+  navigator.clipboard?.writeText(url).then(()=>alert('URL copiada:\n'+url)).catch(()=>prompt('Copia la URL:',url));
+}
+async function publish(){
+  if(!window.__results.length){ alert('Procesa primero.'); return; }
+  const id=document.getElementById('pubId').value.trim()||'station-results';
+  await db.collection('results').doc(id).set({
+    items: window.__results,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  });
+  alert('Publicado ✅\nViewer: '+viewerURL());
+}
+</script>
+</body>
+</html>
