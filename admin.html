@@ -85,12 +85,12 @@ const EXPECTED_COLS = 10;
 window.__results = [];
 const normalize = s => (s??'').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
-// Split robusto: tabs, ; , o cualquier cantidad de espacios
+// ✅ Split robusto: tabs, ; , , o 2+ espacios (no rompe frases con 1 espacio)
 function splitSmart(line){
   if (line.includes('\t')) return line.split('\t').map(s=>s.trim());
   if (line.includes(';'))  return line.split(';').map(s=>s.trim());
   if (line.includes(','))  return line.split(',').map(s=>s.trim());
-  return line.trim().split(/\s+/); // 1+ espacios
+  return line.trim().split(/\s{2,}/).map(s=>s.trim()); // 2 o más espacios
 }
 
 function processData(){
@@ -114,6 +114,7 @@ function processData(){
     const loc=cols[8]||'';
     const detalle=(cols[9]&&cols[9].length)?cols[9]:'conveyable';
 
+    // ✅ Solo paquetes con ubicación EXACTA "En la estación"
     if (normalize(loc)==='en la estacion'){
       found++;
       window.__results.push({id, ruta, inbound: inbound||'N/A', detalle});
