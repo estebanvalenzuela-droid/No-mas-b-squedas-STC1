@@ -5,20 +5,21 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Admin | Analizador de Paquetes</title>
 <style>
- body{font-family:Arial, sans-serif;margin:20px;background:#f4f4f9}
- .container{max-width:980px;margin:auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}
- textarea{width:100%;height:220px;margin:12px 0;padding:10px;border:1px solid #ccc;border-radius:6px}
- .row{display:flex;gap:12px;flex-wrap:wrap}
- button{padding:10px 14px;background:#007BFF;color:#fff;border:0;border-radius:6px;cursor:pointer}
- button:hover{background:#0056b3}
- .package{background:#e9ecef;border:1px solid #ced4da;padding:10px;margin:8px 0;border-radius:6px}
- .summary{background:#f8f9fa;border:1px dashed #ced4da;padding:10px;border-radius:6px;margin:12px 0}
- small.muted{color:#666}
+  body{font-family:Arial, sans-serif;margin:20px;background:#f4f4f9}
+  .container{max-width:980px;margin:auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}
+  textarea{width:100%;height:220px;margin:12px 0;padding:10px;border:1px solid #ccc;border-radius:6px}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  button{padding:10px 14px;background:#007BFF;color:#fff;border:0;border-radius:6px;cursor:pointer}
+  button:hover{background:#0056b3}
+  .package{background:#e9ecef;border:1px solid #ced4da;padding:10px;margin:8px 0;border-radius:6px}
+  .summary{background:#f8f9fa;border:1px dashed #ced4da;padding:10px;border-radius:6px;margin:12px 0}
+  small.muted{color:#666}
 </style>
 </head>
 <body>
 <div class="container">
   <h1>Admin – Analizador</h1>
+
   <label>ID público (fijo) para publicar:
     <input id="pubId" value="station-results" style="padding:6px"/>
   </label>
@@ -40,7 +41,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 
 <script>
-/*** 🔧 Configuración Firebase real de tu proyecto ***/
+/*** 🔧 Configuración Firebase real ***/
 const firebaseConfig = {
   apiKey: "AIzaSyCdiJAKX8RYT9DNanmp25e4FbmZJupHJJ8",
   authDomain: "paquetes-stc1.firebaseapp.com",
@@ -52,8 +53,31 @@ const firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
+
 /* Login anónimo: necesario para escribir en Firestore */
 firebase.auth().signInAnonymously().catch(console.error);
+
+/*** 🔎 Bloque de estado de autenticación / dominios ***/
+const statusDiv = document.createElement('div');
+statusDiv.id = 'status';
+statusDiv.style.cssText = 'margin:10px 0;padding:8px;border:1px dashed #ccc;border-radius:6px;color:#333;background:#f8f9fa';
+statusDiv.textContent = 'Comprobando autenticación…';
+document.querySelector('.container').insertBefore(statusDiv, document.querySelector('#sheetData').parentElement);
+
+firebase.auth().onAuthStateChanged(u => {
+  if (u) statusDiv.textContent = `Autenticado (anónimo). UID: ${u.uid}`;
+  else   statusDiv.textContent = 'No autenticado.';
+});
+
+// Reintento + alert si falla (p.ej. dominio no autorizado)
+firebase.auth().signInAnonymously()
+  .then(() => console.log('Anon sign-in OK'))
+  .catch(e => {
+    console.error('Anon sign-in error:', e);
+    alert('❌ Error de autenticación anónima: ' + (e?.message || e));
+  });
+
+console.log('Firebase initialized with:', firebase.app().options);
 
 /*** Analizador ***/
 const EXPECTED_COLS = 10;
@@ -112,14 +136,35 @@ function copyViewerURL(){
   const url=viewerURL();
   navigator.clipboard?.writeText(url).then(()=>alert('URL copiada:\n'+url)).catch(()=>prompt('Copia la URL:',url));
 }
+
+/*** Publicación con manejo de errores ***/
 async function publish(){
-  if(!window.__results.length){ alert('Procesa primero.'); return; }
-  const id=document.getElementById('pubId').value.trim()||'station-results';
-  await db.collection('results').doc(id).set({
+  if(!window.__results || window.__results.length === 0){
+    alert('Procesa datos primero.');
+    return;
+  }
+  const user = firebase.auth().currentUser;
+  if (!user) {
+    alert('❌ No estás autenticado (anónimo). Habilita Anonymous y autoriza el dominio en Firebase.');
+    console.warn('currentUser es null');
+    return;
+  }
+
+  const id = (document.getElementById('pubId').value || 'station-results').trim();
+  const payload = {
     items: window.__results,
     updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-  });
-  alert('Publicado ✅\nViewer: '+viewerURL());
+  };
+
+  try {
+    console.log('Publicando en Firestore → results/', id, payload);
+    await db.collection('results').doc(id).set(payload);
+    const url = location.origin + location.pathname.replace(/admin\.html$/,'') + 'viewer.html?id=' + encodeURIComponent(id);
+    alert('Publicado ✅\nViewer: ' + url);
+  } catch (e) {
+    console.error('Error al publicar:', e);
+    alert('❌ Error al publicar: ' + (e?.message || e));
+  }
 }
 </script>
 </body>
