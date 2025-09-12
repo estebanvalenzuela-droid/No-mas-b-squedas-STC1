@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Analizador de Paquetes</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f9; }
+    .container { max-width: 980px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,.1); }
+    h1, h2 { text-align: center; color: #333; }
+    textarea { width: 100%; height: 240px; margin-bottom: 12px; padding: 10px; border: 1px solid #ccc; border-radius: 6px; resize: vertical; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-bottom: 12px; }
+    button { padding: 12px 16px; background: #007BFF; color: #fff; border: 0; border-radius: 6px; font-size: 16px; cursor: pointer; }
+    button:hover { background: #0056b3; }
+    .results { margin-top: 20px; border-top: 2px solid #eee; padding-top: 16px; }
+    .package { background: #e9ecef; border: 1px solid #ced4da; padding: 12px; margin-bottom: 10px; border-radius: 6px; }
+    .package p { margin: 4px 0; }
+    .summary { background: #f8f9fa; border: 1px dashed #ced4da; padding: 10px; border-radius: 6px; margin: 12px 0; font-size: 14px; }
+    .muted { color: #666; }
+    #qrWrap { display:none; margin:16px 0; text-align:center; }
+    #qr { margin: 12px auto; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Analizador de Paquetes</h1>
+  <p>
+    Pega los datos con <strong>10 columnas</strong> en este orden:
+    <br><strong>ID de Paquete</strong>, <strong>N.º Ruta</strong>, <strong>Parada</strong>, <strong>Punto</strong>, <strong>Fecha de inbound</strong>, <strong>Alto</strong>, <strong>Ancho</strong>, <strong>Largo</strong>, <strong>Ubicación del paquete</strong>, <strong>Detalle del paquete</strong>.
+    <br/>Separadores aceptados: <em>tab</em>, <code>;</code>, <code>,</code> o <em>2+ espacios</em>. Los campos pueden venir entre <strong>comillas</strong>.
+  </p>
+
+  <textarea id="sheetData" placeholder="Ejemplo:
+12345	RUTA-1	12	PTO-A	2025-09-10	10	20	30	En la estación	&quot;Caja, frágil&quot;
+67890,RUTA-2,15,PTO-B,10/09/2025,8,18,25,En tránsito,Pesado
+11111;RUTA-3;17;PTO-C;2025-09-09;9;19;29;En la estacion;
+22222    RUTA-4    21    PTO-D    2025-09-11    7    17    27    En la estación    "></textarea>
+
+  <div class="row">
+    <button onclick="processData()">Procesar Datos</button>
+    <button onclick="generateShareLink()">Generar enlace</button>
+    <button onclick="showQR()">Mostrar QR</button>
+    <button onclick="exportCSV()">Exportar CSV</button>
+  </div>
+
+  <div id="qrWrap">
+    <h3>QR para compartir</h3>
+    <div id="qr"></div>
+    <button onclick="copyShareURL()">Copiar enlace</button>
+    <button onclick="hideQR()">Cerrar</button>
+  </div>
+
+  <div class="results">
+    <div id="summary" class="summary muted">Sin procesar aún.</div>
+    <h2>Paquetes en la Estación</h2>
+    <div id="packageList"></div>
+  </div>
+</div>
+
+<!-- Librería para QR -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<script>
+  const EXPECTED_COLS = 10;
+  window.__results = [];
+
+  // Normaliza (quita tildes y minúsculas)
+  function normalize(s) {
+    return (s ?? '')
+      .toString()
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  }
+
+  // Parser DSV con soporte de comillas
+  function splitDSV(line, sepChar) {
+    const out = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"'; i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+      if (!inQuotes && ch === sepChar) {
+        out.push(cur.trim());
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    out.push(cur.trim());
+    return out;
+  }
+
+  function splitSmart(line) {
+    if (line.includes('\t')) return splitDSV(line, '\t');
+    if (line.includes(';'))  return splitDSV(line, ';');
+    if (line.includes(','))  return splitDSV(line, ',');
+    return line.split(/ {2,}/).map(s => s.trim());
+  }
+
+  function processData() {
+    const raw = document.getElementById('sheetData').value.trim();
+    const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+    const packageListDiv = document.getElementById('packageList');
+    const summaryDiv = document.getElementById('summary');
+
+    packageListDiv.innerHTML = '';
+    window.__results = [];
+
+    let total = 0, found = 0, skipped = 0;
+
+    lines.forEach(line => {
+      total++;
+      let cols = splitSmart(line).map(c => c ?? '');
+
+      if (cols.length > EXPECTED_COLS) {
+        cols = cols.slice(0, 9).concat([cols.slice(9).join(' ')]);
+      }
+
+      if (cols.length < 9) { skipped++; return; }
+
+      const packageID   = cols[0] || 'N/A';
+      const routeNumber = cols[1] || 'N/A';
+      const inboundDate = (cols[4] || '').trim();
+      const location    = cols[8] || '';
+      const detail      = (cols[9] && cols[9].length) ? cols[9] : 'conveyable';
+
+      if (normalize(location) === 'en la estacion') {
+        found++;
+        window.__results.push({
+          id: packageID,
+          ruta: routeNumber,
+          inbound: inboundDate || 'N/A',
+          detalle: detail
+        });
+
+        const div = document.createElement('div');
+        div.className = 'package';
+        div.innerHTML = `
+          <p><strong>ID de Paquete:</strong> ${packageID}</p>
+          <p><strong>N.º Ruta:</strong> ${routeNumber}</p>
+          <p><strong>Fecha de inbound:</strong> ${inboundDate || 'N/A'}</p>
+          <p><strong>Detalle:</strong> ${detail}</p>
+        `;
+        packageListDiv.appendChild(div);
+      }
+    });
+
+    summaryDiv.classList.remove('muted');
+    summaryDiv.innerHTML = `
+      <strong>Resumen:</strong><br/>
+      Filas totales: ${total} &middot; En la estación: ${found} &middot; Saltadas: ${skipped}
+    `;
+
+    if (found === 0) {
+      packageListDiv.innerHTML = '<p>No se encontraron paquetes en la estación.</p>';
+    }
+  }
+
+  // ==== Compartir ====
+
+  function getShareURL() {
+    if (!window.__results || window.__results.length === 0) return null;
+    const payload = { v: 1, ts: Date.now(), items: window.__results };
+    const json = JSON.stringify(payload);
+    const encoded = btoa(unescape(encodeURIComponent(json)));
+    const base = (location.origin && location.origin !== 'null')
+      ? location.origin + location.pathname
+      : location.pathname;
+    return `${base}#${encoded}`;
+  }
+
+  function generateShareLink() {
+    const url = getShareURL();
+    if (!url) {
+      alert('No hay resultados para compartir. Procesa datos primero.');
+      return;
+    }
+    prompt('Copia este enlace:', url);
+  }
+
+  function showQR() {
+    const url = getShareURL();
+    if (!url) {
+      alert('No hay resultados para compartir. Procesa datos primero.');
+      return;
+    }
+    const wrap = document.getElementById('qrWrap');
+    const qrDiv = document.getElementById('qr');
+    qrDiv.innerHTML = '';
+    new QRCode(qrDiv, { text: url, width: 220, height: 220 });
+    wrap.style.display = 'block';
+  }
+
+  function hideQR() {
+    document.getElementById('qrWrap').style.display = 'none';
+  }
+
+  function copyShareURL() {
+    const url = getShareURL();
+    if (!url) {
+      alert('No hay resultados para copiar. Procesa datos primero.');
+      return;
+    }
+    navigator.clipboard?.writeText(url)
+      .then(() => alert('Enlace copiado al portapapeles.'))
+      .catch(() => prompt('Copia el enlace:', url));
+  }
+
+  function exportCSV() {
+    if (!window.__results || window.__results.length === 0) {
+      alert('No hay resultados para exportar. Procesa datos primero.');
+      return;
+    }
+    const header = ['ID de Paquete','N.º Ruta','Fecha de inbound','Detalle'];
+    const rows = window.__results.map(r => [
+      r.id, r.ruta, r.inbound, `"${String(r.detalle ?? '').replace(/"/g, '""')}"`
+    ]);
+    const csv = [header.join(','), ...rows.map(r=>r.join(','))].join('\n');
+
+    const blob = new Blob([csv], {type: 'text/csv;charset=utf-8;'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `paquetes_en_estacion_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  // ==== Arranque desde enlace compartido (hash) ====
+  (function bootFromHash(){
+    if (!location.hash || location.hash.length <= 1) return;
+    try {
+      const encoded = location.hash.slice(1);
+      const json = decodeURIComponent(escape(atob(encoded)));
+      const data = JSON.parse(json);
+      if (data && Array.isArray(data.items)) {
+        window.__results = data.items.slice();
+        const packageListDiv = document.getElementById('packageList');
+        const summaryDiv = document.getElementById('summary');
+        packageListDiv.innerHTML = '';
+        for (const it of window.__results) {
+          const div = document.createElement('div');
+          div.className = 'package';
+          div.innerHTML = `
+            <p><strong>ID de Paquete:</strong> ${it.id}</p>
+            <p><strong>N.º Ruta:</strong> ${it.ruta}</p>
+            <p><strong>Fecha de inbound:</strong> ${it.inbound}</p>
+            <p><strong>Detalle:</strong> ${it.detalle}</p>
+          `;
+          packageListDiv.appendChild(div);
+        }
+        summaryDiv.classList.remove('muted');
+        summaryDiv.innerHTML = `
+          <strong>Resumen (desde enlace):</strong><br/>
+          En la estación: ${window.__results.length}
+        `;
+      }
+    } catch(e) { console.warn('No se pudo leer el hash:', e); }
+  })();
+</script>
+</body>
+</html>
