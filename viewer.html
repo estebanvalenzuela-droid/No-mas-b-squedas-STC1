@@ -3,19 +3,40 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Resultados – Paquetes en la estación</title>
+<title>Paquetes en la estación</title>
 <style>
- body{font-family:Arial, sans-serif;margin:20px;background:#f4f4f9}
- .container{max-width:900px;margin:auto;background:#fff;padding:20px;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,.1)}
- .package{background:#e9ecef;border:1px solid #ced4da;padding:10px;margin:8px 0;border-radius:6px}
- .muted{color:#666}
+  body{font-family:Arial, sans-serif;margin:18px;background:#f4f4f9}
+  .wrap{max-width:900px;margin:auto;background:#fff;padding:18px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.08)}
+  h1{margin:0 0 12px}
+  .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:6px 0 10px}
+  select, label{font-size:14px}
+  select{padding:6px 8px;border:1px solid #cfd3d8;border-radius:6px;background:#fff}
+  .badge{display:inline-block;font-size:12px;background:#e9eefc;color:#0b5cff;border:1px solid #d6e0ff;padding:2px 8px;border-radius:999px;margin-left:6px}
+  .summary{margin:10px 0;padding:10px;border:1px dashed #cfd3d8;border-radius:8px;background:#fafbfc}
+  .list{display:grid;gap:10px;margin-top:10px}
+  .card{background:#fff;border:1px solid #e1e5ea;border-radius:10px;padding:12px}
+  .row{display:flex;gap:14px;flex-wrap:wrap}
+  .kv{background:#f5f7fa;border:1px solid #e5e9ef;border-radius:6px;padding:6px 8px;font-size:13px}
+  .muted{color:#6d7380;font-size:12px}
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>Paquetes en la estación</h1>
-  <div id="meta" class="muted">Cargando…</div>
-  <div id="list"></div>
+<div class="wrap">
+  <h1>Paquetes en la estación <span id="docId" class="muted"></span></h1>
+
+  <div class="toolbar">
+    <label>Ruta:
+      <select id="route">
+        <option value="">(todas)</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="fConv" checked> Conveyable</label>
+    <label><input type="checkbox" id="fVol" checked> Voluminoso</label>
+  </div>
+
+  <div id="summary" class="summary">Cargando…</div>
+  <div id="list" class="list"></div>
+  <div id="empty" class="muted" style="display:none">No hay paquetes que coincidan.</div>
 </div>
 
 <!-- Firebase -->
@@ -23,7 +44,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 
 <script>
-/*** 🔧 Configuración Firebase real de tu proyecto ***/
+/*** Firebase ***/
 const firebaseConfig = {
   apiKey: "AIzaSyCdiJAKX8RYT9DNanmp25e4FbmZJupHJJ8",
   authDomain: "paquetes-stc1.firebaseapp.com",
@@ -36,37 +57,93 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 
-/*** Lectura en vivo del documento ***/
-const params = new URLSearchParams(location.search);
-const id = params.get('id') || 'station-results';
-const meta = document.getElementById('meta');
-const list = document.getElementById('list');
+/*** Utils & state ***/
+const $ = s => document.querySelector(s);
+const fmt = s => (s??'').toString().trim();
+const norm = s => fmt(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+const getId = () => new URLSearchParams(location.search).get('id') || 'station-results';
 
-db.collection('results').doc(id).onSnapshot(snap=>{
-  if(!snap.exists){
-    meta.textContent = `Sin datos publicados (ID: ${id}).`;
-    list.innerHTML = '';
-    return;
-  }
-  const data = snap.data();
-  const items = Array.isArray(data.items) ? data.items : [];
-  list.innerHTML = '';
-  items.forEach(it=>{
-    const div = document.createElement('div');
-    div.className = 'package';
-    div.innerHTML = `
-      <p><strong>ID:</strong> ${it.id}</p>
-      <p><strong>Ruta:</strong> ${it.ruta}</p>
-      <p><strong>Fecha inbound:</strong> ${it.inbound || 'N/A'}</p>
-      <p><strong>Detalle:</strong> ${it.detalle || ''}</p>
-    `;
-    list.appendChild(div);
+let raw = [];   // items crudos de Firestore
+let view = [];  // items filtrados
+
+/*** Filtros ***/
+function buildRouteOptions(items){
+  const sel = $('#route');
+  const uniq = [...new Set(items.map(x => fmt(x.ruta)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+  sel.innerHTML = '<option value="">(todas)</option>' + uniq.map(r=>`<option>${r}</option>`).join('');
+}
+
+function applyFilters(){
+  const route = fmt($('#route').value);
+  const wantConv = $('#fConv').checked;
+  const wantVol  = $('#fVol').checked;
+
+  view = raw.filter(it=>{
+    if(route && fmt(it.ruta)!==route) return false;
+    const det = norm(it.detalle);
+    const isConv = det === 'conveyable';
+    const isVol  = det === 'voluminoso';
+    if(!wantConv && isConv) return false;
+    if(!wantVol  && isVol)  return false;
+    // si no es ni conveyable ni voluminoso, lo mostramos siempre que no esté excluido
+    return true;
   });
-  const when = data.updatedAt?.toDate ? data.updatedAt.toDate().toLocaleString() : '—';
-  meta.textContent = `Total: ${items.length} · Última actualización: ${when} · ID: ${id}`;
-}, err=>{
-  meta.textContent = 'Error al cargar: ' + err.message;
-});
+
+  render();
+}
+
+/*** Render ***/
+function render(){
+  const list = $('#list');
+  const empty = $('#empty');
+  const total = view.length;
+
+  $('#summary').innerHTML = `<strong>Total mostrados:</strong> ${total} <span class="muted">(filtros aplicados)</span>`;
+  list.innerHTML = '';
+
+  view.forEach(it=>{
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <div class="row">
+        <div class="kv"><strong>ID:</strong> ${fmt(it.id)}</div>
+        <div class="kv"><strong>Ruta:</strong> ${fmt(it.ruta)}</div>
+        <div class="kv"><strong>Inbound:</strong> ${fmt(it.inbound) || '—'}</div>
+      </div>
+      ${it.detalle ? `<span class="badge">${fmt(it.detalle)}</span>` : ''}
+    `;
+    list.appendChild(card);
+  });
+
+  empty.style.display = total ? 'none' : 'block';
+}
+
+/*** Carga en vivo ***/
+(function init(){
+  const id = getId();
+  $('#docId').textContent = `(ID: ${id})`;
+  db.collection('results').doc(id).onSnapshot(snap=>{
+    if(!snap.exists){
+      raw = []; view = [];
+      $('#summary').textContent = 'Sin datos publicados.';
+      $('#list').innerHTML='';
+      $('#empty').style.display='block';
+      return;
+    }
+    const data = snap.data()||{};
+    raw = Array.isArray(data.items) ? data.items.map(x=>({
+      id: x.id ?? '', ruta: x.ruta ?? '', inbound: x.inbound ?? '', detalle: x.detalle ?? ''
+    })) : [];
+    buildRouteOptions(raw);
+    view = raw.slice();
+    render();
+  });
+
+  // eventos de filtros
+  $('#route').addEventListener('change', applyFilters);
+  $('#fConv').addEventListener('change', applyFilters);
+  $('#fVol').addEventListener('change', applyFilters);
+})();
 </script>
 </body>
 </html>
