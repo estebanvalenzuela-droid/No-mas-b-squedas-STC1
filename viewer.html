@@ -9,8 +9,8 @@
   .wrap{max-width:900px;margin:auto;background:#fff;padding:18px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.08)}
   h1{margin:0 0 12px}
   .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:6px 0 10px}
-  select, label{font-size:14px}
-  select{padding:6px 8px;border:1px solid #cfd3d8;border-radius:6px;background:#fff}
+  input[type="text"], select{padding:6px 8px;border:1px solid #cfd3d8;border-radius:6px;background:#fff;font-size:14px}
+  label{font-size:14px}
   .badge{display:inline-block;font-size:12px;background:#e9eefc;color:#0b5cff;border:1px solid #d6e0ff;padding:2px 8px;border-radius:999px;margin-left:6px}
   .summary{margin:10px 0;padding:10px;border:1px dashed #cfd3d8;border-radius:8px;background:#fafbfc}
   .list{display:grid;gap:10px;margin-top:10px}
@@ -25,10 +25,9 @@
   <h1>Paquetes en la estación <span id="docId" class="muted"></span></h1>
 
   <div class="toolbar">
-    <label>Ruta:
-      <select id="route">
-        <option value="">(todas)</option>
-      </select>
+    <input id="routePrefix" type="text" placeholder="Filtrar ruta por letras (ej: A, G, H...)" />
+    <label>Hora:
+      <select id="hourRange"></select>
     </label>
     <label><input type="checkbox" id="fConv" checked> Conveyable</label>
     <label><input type="checkbox" id="fVol" checked> Voluminoso</label>
@@ -62,30 +61,45 @@ const $ = s => document.querySelector(s);
 const fmt = s => (s??'').toString().trim();
 const norm = s => fmt(s).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 const getId = () => new URLSearchParams(location.search).get('id') || 'station-results';
+const debounce = (fn,ms=250)=>{let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms)}};
 
-let raw = [];   // items crudos de Firestore
-let view = [];  // items filtrados
-
-/*** Filtros ***/
-function buildRouteOptions(items){
-  const sel = $('#route');
-  const uniq = [...new Set(items.map(x => fmt(x.ruta)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
-  sel.innerHTML = '<option value="">(todas)</option>' + uniq.map(r=>`<option>${r}</option>`).join('');
+// inbound: "12/09/2025 6:21" → hour = 6
+function extractHour(inbound){
+  const t = fmt(inbound);
+  const m = t.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+  if(!m) return null;
+  return Number(m[4]); // hora
 }
 
+let raw = [];
+let view = [];
+
+/*** Filtro principal ***/
 function applyFilters(){
-  const route = fmt($('#route').value);
+  const prefix = norm($('#routePrefix').value); // letras de ruta
   const wantConv = $('#fConv').checked;
   const wantVol  = $('#fVol').checked;
+  const hrSel = $('#hourRange').value; // "", "5-6", ...
+  let hrStart = null, hrEnd = null;
+  if(hrSel){
+    const [a,b] = hrSel.split('-').map(Number);
+    hrStart = a; hrEnd = b;
+  }
 
   view = raw.filter(it=>{
-    if(route && fmt(it.ruta)!==route) return false;
+    if(prefix && !norm(it.ruta).startsWith(prefix)) return false;
+
     const det = norm(it.detalle);
     const isConv = det === 'conveyable';
     const isVol  = det === 'voluminoso';
     if(!wantConv && isConv) return false;
     if(!wantVol  && isVol)  return false;
-    // si no es ni conveyable ni voluminoso, lo mostramos siempre que no esté excluido
+
+    if(hrStart!==null){
+      const h = extractHour(it.inbound);
+      if(h===null) return false;
+      if(!(h >= hrStart && h < hrEnd)) return false;
+    }
     return true;
   });
 
@@ -98,7 +112,7 @@ function render(){
   const empty = $('#empty');
   const total = view.length;
 
-  $('#summary').innerHTML = `<strong>Total mostrados:</strong> ${total} <span class="muted">(filtros aplicados)</span>`;
+  $('#summary').innerHTML = `<strong>Total mostrados:</strong> ${total}`;
   list.innerHTML = '';
 
   view.forEach(it=>{
@@ -122,6 +136,14 @@ function render(){
 (function init(){
   const id = getId();
   $('#docId').textContent = `(ID: ${id})`;
+
+  // Llenar selector de horas
+  const hrSel = $('#hourRange');
+  hrSel.innerHTML = '<option value="">(todas)</option>';
+  for(let h=0; h<24; h++){
+    hrSel.innerHTML += `<option value="${h}-${h+1}">${h}:00 - ${h+1}:00</option>`;
+  }
+
   db.collection('results').doc(id).onSnapshot(snap=>{
     if(!snap.exists){
       raw = []; view = [];
@@ -134,13 +156,13 @@ function render(){
     raw = Array.isArray(data.items) ? data.items.map(x=>({
       id: x.id ?? '', ruta: x.ruta ?? '', inbound: x.inbound ?? '', detalle: x.detalle ?? ''
     })) : [];
-    buildRouteOptions(raw);
     view = raw.slice();
     render();
   });
 
   // eventos de filtros
-  $('#route').addEventListener('change', applyFilters);
+  $('#routePrefix').addEventListener('input', debounce(applyFilters, 180));
+  $('#hourRange').addEventListener('change', applyFilters);
   $('#fConv').addEventListener('change', applyFilters);
   $('#fVol').addEventListener('change', applyFilters);
 })();
