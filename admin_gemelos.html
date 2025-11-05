@@ -1,86 +1,192 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Admin - Gemelos de Rutas</title>
 <style>
-  body{font-family:Arial, sans-serif;margin:18px;background:#f4f4f9}
-  .wrap{max-width:900px;margin:auto;background:#fff;padding:18px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
-  textarea{width:100%;height:160px;padding:8px;border-radius:6px;border:1px solid #ccc;font-family:monospace}
-  input[type=text]{padding:6px 8px;border-radius:6px;border:1px solid #ccc}
-  .row{display:flex;gap:8px;margin-top:8px}
-  button{padding:8px 12px;border-radius:8px;border:0;background:#0b5cff;color:#fff;cursor:pointer}
-  #qr{margin-top:12px}
+  body{font-family:Arial, sans-serif;margin:20px;background:#f4f4f9}
+  .wrap{max-width:920px;margin:0 auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+  h1{margin-top:0}
+  textarea{width:100%;height:200px;padding:10px;border-radius:6px;border:1px solid #ccc;font-family:monospace}
+  input[type=text]{padding:8px;border-radius:6px;border:1px solid #ccc;width:240px}
+  .row{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
+  button{background:#0b5cff;color:#fff;border:0;padding:10px 14px;border-radius:8px;cursor:pointer}
+  button.secondary{background:#17a2b8}
+  .note{color:#666;margin-top:8px}
+  .status{margin:12px 0;padding:10px;border-radius:6px;border:1px dashed #ccc;background:#f8f9fa}
+  .list{margin-top:14px}
+  .item{background:#e9ecef;padding:8px;border-radius:6px;margin-bottom:6px}
+  .small{font-size:13px;color:#666}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h2>Admin — Crear Turno (Gemelos)</h2>
-  <p>Pega las rutas (una por línea) o desde Sheets (A2:A...).</p>
-  <textarea id="routesTxt" placeholder="A1\nB1\nC1 ..."></textarea>
-  <div class="row">
-    <input id="shiftName" type="text" placeholder="Nombre turno (opcional)" style="flex:1"/>
-    <button onclick="createShift()">Crear turno y generar QR</button>
+  <div class="wrap">
+    <h1>Admin — Crear Turno (Gemelos)</h1>
+
+    <p>Pega las rutas (una por línea) tal como vienen desde Sheets (ej.: <code>A10_AM1</code>, <code>B3_AM1</code>). El sistema guardará solo la parte antes del <code>_</code> (ej. <code>A10</code>).</p>
+
+    <label>Nombre del turno (opcional):
+      <input id="turnoName" type="text" placeholder="Ej: Turno Mañana 2025-09-12">
+    </label>
+
+    <textarea id="routesTxt" placeholder="Pega las rutas aquí, una por línea..."></textarea>
+
+    <div class="row">
+      <button onclick="createTurn()">Crear turno</button>
+      <button class="secondary" onclick="copyViewerURL()">Copiar URL del viewer</button>
+      <button onclick="clearAll()">Limpiar</button>
+    </div>
+
+    <div id="status" class="status">Estado: —</div>
+
+    <div id="result" class="list"></div>
+
+    <p class="note">Nota: necesitas tener autenticación anónima habilitada y el dominio permitido en Firebase Auth (dominios autorizados) para publicar sin errores.</p>
   </div>
 
-  <div id="status"></div>
-  <div id="qr"></div>
-</div>
+  <!-- Firebase compat (igual que en tus otros archivos) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 
-<!-- librería QR -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script>
+  // === CONFIG FIREBASE ===
+  const firebaseConfig = {
+    apiKey: "AIzaSyCdiJAKX8RYT9DNanmp25e4FbmZJupHJJ8",
+    authDomain: "paquetes-stc1.firebaseapp.com",
+    projectId: "paquetes-stc1",
+    storageBucket: "paquetes-stc1.appspot.com",
+    messagingSenderId: "561895525942",
+    appId: "1:561895525942:web:883c13c63fb1447c4fd297",
+    measurementId: "G-1TEMJD6VGX"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
 
-<script>
-/* Config Firebase (usa la tuya) */
-const firebaseConfig = {
-  apiKey: "AIzaSyCdiJAKX8RYT9DNanmp25e4FbmZJupHJJ8",
-  authDomain: "paquetes-stc1.firebaseapp.com",
-  projectId: "paquetes-stc1",
-  storageBucket: "paquetes-stc1.appspot.com",
-  messagingSenderId: "561895525942",
-  appId: "1:561895525942:web:883c13c63fb1447c4fd297",
-  measurementId: "G-1TEMJD6VGX"
-};
-firebase.initializeApp(firebaseConfig);
-const db = firebase.firestore();
-firebase.auth().signInAnonymously().catch(console.error);
+  // Auth anónimo
+  firebase.auth().onAuthStateChanged(u=>{
+    const s = document.getElementById('status');
+    if(u) s.textContent = `Autenticado (anónimo). UID: ${u.uid}`;
+    else s.textContent = 'No autenticado.';
+  });
+  // Intentar signIn anonim
+  firebase.auth().signInAnonymously().catch(e=>{
+    console.error('Anon sign-in error', e);
+    alert('Error de autenticación anónima: ' + (e?.message||e));
+    document.getElementById('status').textContent = 'Error auth: ' + (e?.message||e);
+  });
 
-const status = id => document.getElementById('status').innerText = id;
-
-function nowId(){
-  const d = new Date();
-  const y = d.getFullYear(), mo = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0');
-  const h = String(d.getHours()).padStart(2,'0'), m = String(d.getMinutes()).padStart(2,'0');
-  return `turno-${y}${mo}${day}-${h}${m}`;
-}
-
-async function createShift(){
-  const raw = document.getElementById('routesTxt').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
-  if(!raw.length){ alert('Pega al menos una ruta.'); return; }
-  const name = document.getElementById('shiftName').value.trim() || nowId();
-  const id = nowId(); // id único por timestamp (puedes usar otro)
-  const payload = { id, name, routes: raw, createdAt: firebase.firestore.FieldValue.serverTimestamp(), updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
-  status('Creando turno...');
-  try{
-    await db.collection('shifts').doc(id).set(payload);
-    status('Turno creado: ' + id);
-    showQR(id);
-  }catch(e){
-    console.error(e); status('Error: ' + e.message);
+  // === UTILIDADES ===
+  function nowId(){
+    const d=new Date();
+    const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
+    const hh=String(d.getHours()).padStart(2,'0'), mm=String(d.getMinutes()).padStart(2,'0'), ss=String(d.getSeconds()).padStart(2,'0');
+    return `${y}${m}${day}-${hh}${mm}${ss}`;
   }
-}
 
-function showQR(id){
-  const base = location.origin + location.pathname.replace(/admin_gemelos\.html$/,'');
-  const url = base + 'register_gemelo.html?shift=' + encodeURIComponent(id);
-  const qrDiv = document.getElementById('qr');
-  qrDiv.innerHTML = '<p>URL registro: <a href="'+url+'" target="_blank">'+url+'</a></p>';
-  new QRCode(qrDiv, { text: url, width: 220, height: 220 });
-}
-</script>
+  function normalizeRoute(s){
+    // toma todo hasta el primer "_" (si no existe, retorna la línea tal cual, trimmed)
+    if(!s) return '';
+    return s.trim().split('_')[0];
+  }
+
+  // Copiar URL del viewer (si tienes viewer_gemelos.html en el repo)
+  function viewerURL(){
+    const base = location.origin + location.pathname.replace(/admin_gemelos\.html$/,'') + 'viewer_gemelos.html';
+    return base;
+  }
+  function copyViewerURL(){
+    const url = viewerURL();
+    navigator.clipboard?.writeText(url).then(()=>alert('URL copiada:\n'+url)).catch(()=>prompt('Copia la URL:',url));
+  }
+
+  // Limpiar textarea/result
+  function clearAll(){
+    document.getElementById('routesTxt').value = '';
+    document.getElementById('result').innerHTML = '';
+    document.getElementById('status').textContent = 'Limpiado.';
+  }
+
+  // === CREAR TURNO ===
+  async function createTurn(){
+    const txt = document.getElementById('routesTxt').value;
+    if(!txt.trim()){
+      alert('Pega las rutas antes de crear el turno.');
+      return;
+    }
+
+    // Procesar líneas: cortar por "_" y filtrar vacíos, y normalizar mayúsculas
+    const rawLines = txt.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    const routes = rawLines.map(l => normalizeRoute(l).toUpperCase()).filter(Boolean);
+
+    if(routes.length === 0){
+      alert('No se detectaron rutas válidas después del procesamiento.');
+      return;
+    }
+
+    // Eliminamos duplicados manteniendo orden
+    const seen = new Set();
+    const unique = [];
+    for(const r of routes){
+      if(!seen.has(r)){ seen.add(r); unique.push(r); }
+    }
+
+    const turnoNameInput = (document.getElementById('turnoName').value || '').trim();
+    const docId = turnoNameInput ? `${turnoNameInput.replace(/\s+/g,'_')}-${nowId()}` : `turno-${nowId()}`;
+
+    const payload = {
+      name: turnoNameInput || docId,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      createdByUID: firebase.auth().currentUser ? firebase.auth().currentUser.uid : null,
+      routes: unique,
+      count: unique.length
+    };
+
+    // Mostrar en UI antes (optimista)
+    document.getElementById('status').textContent = `Publicando turno ${docId} (${unique.length} rutas)...`;
+
+    // Comprobar auth antes de escribir
+    const user = firebase.auth().currentUser;
+    if(!user){
+      alert('No estás autenticado (anónimo). Revisa Firebase Auth + dominios autorizados.');
+      document.getElementById('status').textContent = 'No autenticado. No se publicó.';
+      return;
+    }
+
+    try{
+      await db.collection('turnos_gemelos').doc(docId).set(payload);
+      document.getElementById('status').textContent = `Turno publicado: ${docId} · Rutas: ${unique.length}`;
+      showResult(docId, payload);
+      // copiar URL del viewer con id en query (opcional)
+      const viewer = viewerURL() + '?turno=' + encodeURIComponent(docId);
+      if(confirm('Turno publicado con éxito.\n¿Deseas copiar la URL del viewer para compartir?')){
+        navigator.clipboard?.writeText(viewer).then(()=>alert('URL del viewer copiada:\n'+viewer));
+      }
+    }catch(e){
+      console.error('Error publicando turno:', e);
+      alert('Error publicando: ' + (e?.message || e));
+      document.getElementById('status').textContent = 'Error al publicar: ' + (e?.message || e);
+    }
+  }
+
+  function showResult(docId, payload){
+    const container = document.getElementById('result');
+    container.innerHTML = '';
+    const h = document.createElement('div');
+    h.className = 'item';
+    h.innerHTML = `<strong>Turno:</strong> ${docId} · <span class="small">${payload.name}</span><br>
+                   <strong>Rutas (${payload.count}):</strong>`;
+    container.appendChild(h);
+
+    const ul = document.createElement('div');
+    payload.routes.forEach(r=>{
+      const d = document.createElement('div'); d.className='item small';
+      d.textContent = r;
+      ul.appendChild(d);
+    });
+    container.appendChild(ul);
+  }
+  </script>
 </body>
 </html>
