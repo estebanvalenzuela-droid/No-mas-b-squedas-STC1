@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Viewer Gemelos</title>
+<style>
+  body{font-family:Arial;margin:18px;background:#f6f7fb}
+  .wrap{max-width:900px;margin:auto;background:#fff;padding:14px;border-radius:10px}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px;border-bottom:1px solid #eee;text-align:left}
+  .tools{display:flex;gap:8px;margin-bottom:8px}
+  button{padding:6px 10px;border-radius:6px;border:0;background:#0b5cff;color:#fff;cursor:pointer}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h2>Gemelos — Turno <span id="shiftId"></span></h2>
+  <div class="tools">
+    <button onclick="exportCSV()">Exportar CSV</button>
+    <div id="summary"></div>
+  </div>
+  <table id="tbl"><thead><tr><th>Ruta</th><th>Gemelo</th><th>Notas</th><th>Hora</th></tr></thead><tbody></tbody></table>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyCdiJAKX8RYT9DNanmp25e4FbmZJupHJJ8",
+  authDomain: "paquetes-stc1.firebaseapp.com",
+  projectId: "paquetes-stc1",
+  storageBucket: "paquetes-stc1.appspot.com",
+  messagingSenderId: "561895525942",
+  appId: "1:561895525942:web:883c13c63fb1447c4fd297",
+  measurementId: "G-1TEMJD6VGX"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+const params = new URLSearchParams(location.search);
+const shift = params.get('shift') || 'turno-default';
+document.getElementById('shiftId').innerText = shift;
+
+let items = [];
+db.collection('shifts').doc(shift).collection('gemelos').orderBy('createdAt','asc').onSnapshot(snap=>{
+  items = snap.docs.map(d=>({ id: d.id, ...d.data() }));
+  render();
+});
+
+function render(){
+  const tbody = document.querySelector('#tbl tbody');
+  tbody.innerHTML = '';
+  let cnt = {};
+  items.forEach(it=>{
+    const tr = document.createElement('tr');
+    const t = it.createdAt && it.createdAt.toDate ? it.createdAt.toDate().toLocaleTimeString() : '';
+    tr.innerHTML = `<td>${it.route||''}</td><td>${it.twin||''}</td><td>${it.notes||''}</td><td>${t}</td>`;
+    tbody.appendChild(tr);
+    cnt[it.route] = (cnt[it.route]||0) + 1;
+  });
+  document.getElementById('summary').innerText = 'Total registros: ' + items.length;
+}
+
+function exportCSV(){
+  if(!items.length){ alert('Sin datos'); return; }
+  const head = 'route,twin,notes,createdAt\n';
+  const rows = items.map(it=> `${csv(it.route)},${csv(it.twin)},${csv(it.notes)},${it.createdAt ? it.createdAt.toDate().toISOString() : ''}` );
+  const csv = head + rows.join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = `gemelos_${shift}.csv`; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1500);
+}
+function csv(v){ return '"'+(v||'').toString().replace(/"/g,'""')+'"'; }
+</script>
+</body>
+</html>
